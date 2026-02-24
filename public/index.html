@@ -91,9 +91,9 @@
               if (mobile) {
                 opts.returnUrl = BASE_URL;
                 opts.cancelUrl = BASE_URL;
-                opts.appSwitchPreference = {
-                  launchPaypalApp: true,
-                };
+               // opts.appSwitchPreference = {
+                  //launchPaypalApp: true,
+               // };
               }
 
               log("createPayment opts: " + JSON.stringify(opts, null, 2));
