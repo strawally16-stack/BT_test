@@ -2,101 +2,141 @@
 <html>
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Braintree + PayPal (Commit + App Switch)</title>
 
-    <script src="https://js.braintreegateway.com/web/3.134.0/js/client.min.js"></script>
-    <script src="https://js.braintreegateway.com/web/3.134.0/js/paypal-checkout.min.js"></script>
+    <script src="https://js.braintreegateway.com/web/3.134.0/js/client.min.js" defer></script>
+    <script src="https://js.braintreegateway.com/web/3.134.0/js/paypal-checkout.min.js" defer></script>
+
+    <style>
+      body { font-family: sans-serif; max-width: 480px; margin: 40px auto; padding: 0 20px; }
+      #paypal-button-container { margin: 24px 0; }
+      #log { background: #f4f4f4; padding: 12px; border-radius: 6px; font-size: 13px; white-space: pre-wrap; min-height: 40px; }
+      #status { font-size: 14px; color: #555; margin-bottom: 8px; }
+    </style>
   </head>
 
   <body>
     <h1>Pay with PayPal</h1>
-
+    <p id="status">Initialising...</p>
     <div id="paypal-button-container"></div>
     <pre id="log"></pre>
 
     <script>
-      const AMOUNT = "100.00";
+      const AMOUNT   = "100.00";
       const CURRENCY = "GBP";
+      const BASE_URL = "https://bt-test-b4tq.onrender.com";
 
-      // ⚠️ MUST be real HTTPS (ngrok or production domain)
-      const RETURN_URL = "https://bt-test-b4tq.onrender.com";
-      const CANCEL_URL = "https://bt-test-b4tq.onrender.com";
+      const logEl   = document.getElementById("log");
+      const statusEl = document.getElementById("status");
 
-      const log = (msg) =>
-        (document.getElementById("log").textContent += msg + "\n");
+      function log(msg) {
+        console.log(msg);
+        logEl.textContent += msg + "\n";
+      }
+
+      function setStatus(msg) {
+        statusEl.textContent = msg;
+      }
+
+      function isMobileDevice() {
+        return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      }
 
       async function main() {
-        const clientToken = await fetch("/client_token").then((r) => r.text());
+        setStatus("Fetching client token...");
 
+        let clientToken;
+        try {
+          clientToken = await fetch("/client_token").then((r) => r.text());
+        } catch (e) {
+          setStatus("Failed to fetch client token.");
+          log("Client token error: " + e.message);
+          return;
+        }
+
+        setStatus("Creating Braintree client...");
         const clientInstance = await braintree.client.create({
           authorization: clientToken,
         });
 
-        const paypalCheckoutInstance =
-          await braintree.paypalCheckout.create({
-            client: clientInstance,
-          });
+        const paypalCheckoutInstance = await braintree.paypalCheckout.create({
+          client: clientInstance,
+        });
+
+        setStatus("Loading PayPal SDK...");
 
         paypalCheckoutInstance.loadPayPalSDK(
           {
             components: "buttons",
             currency: CURRENCY,
             intent: "capture",
-            // drop commit: true
+            // Note: commit:true removed — handled via userAction in createPayment
           },
           function () {
+            setStatus("PayPal ready.");
 
-         function createOrder() {
-  const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+            function createOrder() {
+              const mobile = isMobileDevice();
+              log("createOrder — mobile: " + mobile);
 
-  const opts = {
-  flow: "checkout",
-  amount: AMOUNT,
-  currency: CURRENCY,
-  intent: "capture",
-  userAction: "commit",   // lowercase
-};
+              const opts = {
+                flow: "checkout",
+                amount: AMOUNT,
+                currency: CURRENCY,
+                intent: "capture",
+                userAction: "commit",   // lowercase — uppercase causes "options are invalid"
+              };
 
-  if (isMobile) {
-    opts.returnUrl = 'https://bt-test-b4tq.onrender.com';
-    opts.cancelUrl = 'https://bt-test-b4tq.onrender.com';
-    opts.appSwitchPreference = {
-      launchPaypalApp: true,
-    };
-  }
+              if (mobile) {
+                opts.returnUrl = BASE_URL;
+                opts.cancelUrl = BASE_URL;
+                opts.appSwitchPreference = {
+                  launchPaypalApp: true,
+                };
+              }
 
-  console.log("createPayment opts:", opts);
+              log("createPayment opts: " + JSON.stringify(opts, null, 2));
+              return paypalCheckoutInstance.createPayment(opts);
+            }
 
-  return paypalCheckoutInstance.createPayment(opts);
-}
-
-            function handleApprove(data) {
+            function onApprove(data) {
+              log("onApprove — tokenizing...");
               return paypalCheckoutInstance.tokenizePayment(
                 data,
                 async function (err, payload) {
                   if (err) {
                     log("Tokenize error: " + err.message);
+                    setStatus("Tokenization failed.");
                     return;
                   }
 
                   log("Nonce: " + payload.nonce);
+                  setStatus("Processing payment...");
 
-                  const resp = await fetch("/checkout", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                      payment_method_nonce: payload.nonce,
-                      amount: AMOUNT,
-                      currency: CURRENCY,
-                    }),
-                  });
+                  try {
+                    const resp = await fetch("/checkout", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        payment_method_nonce: payload.nonce,
+                        amount: AMOUNT,
+                        currency: CURRENCY,
+                      }),
+                    });
 
-                  const result = await resp.json();
+                    const result = await resp.json();
 
-                  if (result.ok) {
-                    log("Transaction ID: " + result.transactionId);
-                  } else {
-                    log("Server error: " + result.error);
+                    if (result.ok) {
+                      setStatus("Payment successful ✓");
+                      log("Transaction ID: " + result.transactionId);
+                    } else {
+                      setStatus("Payment failed.");
+                      log("Server error: " + result.error);
+                    }
+                  } catch (e) {
+                    setStatus("Network error during checkout.");
+                    log("Fetch error: " + e.message);
                   }
                 }
               );
@@ -105,16 +145,22 @@
             const buttons = paypal.Buttons({
               fundingSource: paypal.FUNDING.PAYPAL,
               createOrder,
-              onApprove: handleApprove,
-              onCancel: () => log("Buyer cancelled"),
+              onApprove,
+              onCancel: () => {
+                log("Buyer cancelled.");
+                setStatus("Payment cancelled.");
+              },
               onError: (err) => {
-                console.error("PayPal error:", err);
-                log("PayPal error: " + err.message);
+                console.error("PayPal SDK error:", err);
+                log("PayPal error: " + (err.message || JSON.stringify(err)));
+                setStatus("PayPal error — see log.");
               },
             });
 
+            // App Switch return: page reloads after PayPal app redirects back
             if (typeof buttons.hasReturned === "function" && buttons.hasReturned()) {
-              log("Resuming App Switch...");
+              log("App Switch return detected — resuming...");
+              setStatus("Resuming from PayPal app...");
               buttons.resume();
             } else {
               buttons.render("#paypal-button-container");
@@ -123,10 +169,11 @@
         );
       }
 
-      main().catch((e) => {
+      window.addEventListener("load", () => main().catch((e) => {
         console.error(e);
         log("Init error: " + e.message);
-      });
+        setStatus("Initialisation failed — see log.");
+      }));
     </script>
   </body>
 </html>
