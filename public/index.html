@@ -42,7 +42,7 @@
             components: "buttons",
             currency: CURRENCY,
             intent: "capture",
-            commit: true, 
+            // drop commit: true
           },
           function () {
 
@@ -50,12 +50,12 @@
   const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
   const opts = {
-    flow: "checkout",
-    amount: AMOUNT,
-    currency: CURRENCY,
-    intent: "capture",
-   // userAction: "commit",
-  };
+  flow: "checkout",
+  amount: AMOUNT,
+  currency: CURRENCY,
+  intent: "capture",
+  userAction: "commit",   // lowercase
+};
 
   if (isMobile) {
     opts.returnUrl = 'https://bt-test-b4tq.onrender.com';
