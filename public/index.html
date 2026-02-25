@@ -2,178 +2,146 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Braintree + PayPal (Commit + App Switch)</title>
+    <title>Braintree + PayPal (Shipping + Contact + Pay Later)</title>
 
-    <script src="https://js.braintreegateway.com/web/3.134.0/js/client.min.js" defer></script>
-    <script src="https://js.braintreegateway.com/web/3.134.0/js/paypal-checkout.min.js" defer></script>
-
-    <style>
-      body { font-family: sans-serif; max-width: 480px; margin: 40px auto; padding: 0 20px; }
-      #paypal-button-container { margin: 24px 0; }
-      #log { background: #f4f4f4; padding: 12px; border-radius: 6px; font-size: 13px; white-space: pre-wrap; min-height: 40px; }
-      #status { font-size: 14px; color: #555; margin-bottom: 8px; }
-    </style>
+    <script src="https://js.braintreegateway.com/web/3.134.0/js/client.min.js"></script>
+    <script src="https://js.braintreegateway.com/web/3.134.0/js/paypal-checkout.min.js"></script>
   </head>
 
   <body>
-    <h1>Pay with PayPal</h1>
-    <p id="status">Initialising...</p>
-    <div id="paypal-button-container"></div>
+    <h1>PayPal / Pay Later</h1>
+
+    <!-- Pay Later messaging (optional but recommended) -->
+    <div
+      data-pp-message
+      data-pp-layout="text"
+      data-pp-text-color="black"
+      data-pp-logo-type="inline"
+      data-pp-amount="100.00"
+    ></div>
+
+    <div id="paypal-button"></div>
+    <div id="pay-later-button" style="margin-top: 12px;"></div>
+
     <pre id="log"></pre>
 
     <script>
-      const AMOUNT   = "100.00";
+      const AMOUNT = "100.00";
       const CURRENCY = "GBP";
-      const BASE_URL = "https://bt-test-b4tq.onrender.com";
 
-      const logEl   = document.getElementById("log");
-      const statusEl = document.getElementById("status");
-
-      function log(msg) {
-        console.log(msg);
-        logEl.textContent += msg + "\n";
-      }
-
-      function setStatus(msg) {
-        statusEl.textContent = msg;
-      }
-
-      function isMobileDevice() {
-        return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-      }
+      const log = (msg) => (document.getElementById("log").textContent += msg + "\n");
 
       async function main() {
-        setStatus("Fetching client token...");
+        const clientToken = await fetch("/client_token").then((r) => r.text());
 
-        let clientToken;
-        try {
-          clientToken = await fetch("/client_token").then((r) => r.text());
-        } catch (e) {
-          setStatus("Failed to fetch client token.");
-          log("Client token error: " + e.message);
-          return;
-        }
+        const clientInstance = await braintree.client.create({ authorization: clientToken });
+        const paypalCheckoutInstance = await braintree.paypalCheckout.create({ client: clientInstance });
 
-        setStatus("Creating Braintree client...");
-        const clientInstance = await braintree.client.create({
-          authorization: clientToken,
-        });
-
-        const paypalCheckoutInstance = await braintree.paypalCheckout.create({
-          client: clientInstance,
-        });
-
-        setStatus("Loading PayPal SDK...");
-
+        // Pay Later guide: must include components=buttons,messages and dataAttributes.amount for Pay Later button :contentReference[oaicite:5]{index=5}
         paypalCheckoutInstance.loadPayPalSDK(
           {
-            components: "buttons",
+            components: "buttons,messages",
+            "buyer-country": "GB",
             currency: CURRENCY,
             intent: "capture",
-            // Note: commit:true removed — handled via userAction in createPayment
+            "enable-funding": "paylater",
+            dataAttributes: { amount: AMOUNT },
           },
           function () {
-            setStatus("PayPal ready.");
-
             function createOrder() {
-              const mobile = isMobileDevice();
-              log("createOrder — mobile: " + mobile);
+              // One-time Payments: createPayment() options; add Contact Module + Shipping callback URL :contentReference[oaicite:6]{index=6}
+             const createPaymentRequestOptions = {
+              flow: "checkout",
+              amount: AMOUNT,
+              currency: CURRENCY,
+              intent: "capture",
+              // REMOVE shippingCallbackUrl for now
+              // REMOVE shippingAddressOverride for now (add back after base flow works)
+            };
+            return paypalCheckoutInstance.createPayment(createPaymentRequestOptions);
 
-              const opts = {
-                flow: "checkout",
-                amount: AMOUNT,
-                currency: CURRENCY,
-                intent: "capture",
-                //userAction: "commit",   // lowercase — uppercase causes "options are invalid"
-              };
-
-              if (mobile) {
-                opts.returnUrl = BASE_URL;
-                opts.cancelUrl = BASE_URL;
-               // opts.appSwitchPreference = {
-                  //launchPaypalApp: true,
-               // };
-              }
-
-              log("createPayment opts: " + JSON.stringify(opts, null, 2));
-              return paypalCheckoutInstance.createPayment(opts);
             }
 
-            function onApprove(data) {
-              log("onApprove — tokenizing...");
-              return paypalCheckoutInstance.tokenizePayment(
-                data,
-                async function (err, payload) {
-                  if (err) {
-                    log("Tokenize error: " + err.message);
-                    setStatus("Tokenization failed.");
-                    return;
-                  }
-
-                  log("Nonce: " + payload.nonce);
-                  setStatus("Processing payment...");
-
-                  try {
-                    const resp = await fetch("/checkout", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        payment_method_nonce: payload.nonce,
-                        amount: AMOUNT,
-                        currency: CURRENCY,
-                      }),
-                    });
-
-                    const result = await resp.json();
-
-                    if (result.ok) {
-                      setStatus("Payment successful ✓");
-                      log("Transaction ID: " + result.transactionId);
-                    } else {
-                      setStatus("Payment failed.");
-                      log("Server error: " + result.error);
-                    }
-                  } catch (e) {
-                    setStatus("Network error during checkout.");
-                    log("Fetch error: " + e.message);
-                  }
+            async function handleApprove(data) {
+              return paypalCheckoutInstance.tokenizePayment(data, async function (err, payload) {
+                if (err) {
+                  console.error(err);
+                  log("Tokenize error: " + err.message);
+                  return;
                 }
-              );
+
+                log("Nonce: " + payload.nonce);
+
+                const resp = await fetch("/checkout", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    payment_method_nonce: payload.nonce,
+                    amount: AMOUNT,
+                  }),
+                });
+
+                const result = await resp.json();
+                if (result.ok) log("Transaction ID: " + result.transactionId);
+                else log("Server error: " + (result.error || JSON.stringify(result)));
+              });
             }
 
-            const buttons = paypal.Buttons({
-              fundingSource: paypal.FUNDING.PAYPAL,
+            // Optional: client-side listener for shipping changes.
+            // If you need to recalc totals on address/option change, you can call your server and then use
+            // paypalCheckoutInstance.updatePayment (Braintree docs note updatePayment replaces actions.order.patch) :contentReference[oaicite:10]{index=10}
+            async function onShippingChange(data, actions) {
+              try {
+                const resp = await fetch("/shipping/reprice", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ data }),
+                });
+                const updated = await resp.json();
+
+                // Update the PayPal flow with updated shipping/totals
+                await paypalCheckoutInstance.updatePayment(updated);
+
+                return actions.resolve();
+              } catch (e) {
+                console.error(e);
+                return actions.reject();
+              }
+            }
+
+            // PayPal button
+            paypal
+              .Buttons({
+                fundingSource: paypal.FUNDING.PAYPAL,
+                createOrder,
+                onApprove: handleApprove,
+                onShippingChange, // optional (see notes above)
+                onCancel: (data) => log("Cancelled: " + JSON.stringify(data, null, 2)),
+                onError: (err) => log("PayPal error: " + err.message),
+              })
+              .render("#paypal-button");
+
+            // Standalone Pay Later button (Pay Later guide) :contentReference[oaicite:11]{index=11}
+            const payLaterButton = paypal.Buttons({
+              fundingSource: paypal.FUNDING.PAYLATER,
               createOrder,
-              onApprove,
-              onCancel: () => {
-                log("Buyer cancelled.");
-                setStatus("Payment cancelled.");
-              },
-              onError: (err) => {
-                console.error("PayPal SDK error:", err);
-                log("PayPal error: " + (err.message || JSON.stringify(err)));
-                setStatus("PayPal error — see log.");
-              },
+              onApprove: handleApprove,
+              onShippingChange, // optional
             });
 
-            // App Switch return: page reloads after PayPal app redirects back
-            if (typeof buttons.hasReturned === "function" && buttons.hasReturned()) {
-              log("App Switch return detected — resuming...");
-              setStatus("Resuming from PayPal app...");
-              buttons.resume();
+            if (payLaterButton.isEligible()) {
+              payLaterButton.render("#pay-later-button");
             } else {
-              buttons.render("#paypal-button-container");
+              log("Pay Later button not eligible for this buyer/context.");
             }
           }
         );
       }
 
-      window.addEventListener("load", () => main().catch((e) => {
+      main().catch((e) => {
         console.error(e);
         log("Init error: " + e.message);
-        setStatus("Initialisation failed — see log.");
-      }));
+      });
     </script>
   </body>
 </html>
